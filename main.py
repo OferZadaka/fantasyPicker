@@ -1,4 +1,5 @@
 import asyncio
+from multiprocessing.connection import wait
 
 import aiohttp
 from prettytable import PrettyTable
@@ -28,32 +29,43 @@ teams = {
     "Wolves": 20,
 }
 roles = {
-    "Goal Keeper": 1,
-    "Defender": 2,
-    "Midfielder": 3,
-    "Forward": 4,
+    "GK": 1,
+    "D": 2,
+    "M": 3,
+    "F": 4,
+    "All": 5,
 }
+calculations = {
+    "Points Per Game" : lambda p: ((p.minutes/90)/float(p.points_per_game)/(p.now_cost/10)) if float(p.points_per_game) > 0 else 0,
+    "Top Points" : lambda p: p.total_points / (p.now_cost/10),
 
+}
 def get_role_by_code(code):
     for role in roles:
-        if roles[role] == code:
+        if roles[role] == code and type(code) == int:
             return role
+        elif role == code and type(code) == str:
+            return roles[role]
     return None
 
 def get_team_by_code(code):
     for team in teams:
         if teams[team] == code:
             return team
+        elif team == code:
+            return teams[team]
     return None
 
-def print_table(top_performers, score_func, n):
+def print_table(top_performers, score_func, n, fixtures):
     player_table = PrettyTable()
-    player_table.field_names = ["Player", "£", "Team", "G", "A", "G + A","Status", "Total Points", "Minutes", "Score", "Role"]
+    player_table.field_names = ["Player", "£", "Team", "Against", "G", "A", "G + A","Status", "Total Points", "Minutes", "Influence", "Score", "Role"]
     player_table.align["Player"] = "l"
     if n == 1:
         p = top_performers
-        player_table.add_row([p.web_name, f"£{p.now_cost / 10}", get_team_by_code(p.team),
-                            p.goals_scored, p.assists, p.goals_scored + p.assists, p.status, p.total_points, p.minutes, 0, p.element_type])
+        get_next_fixture(fixtures, p.team_code)
+        player_table.add_row([players.web_name, f"£{players.now_cost / 10}", get_team_by_code(players.team),
+                            players.goals_scored, players.assists, players.goals_scored + players.assists, players.status,
+                            players.total_points, players.minutes,players.influence , 0, get_role_by_code(players.element_type)])
 
     else:
         for p in top_performers[:n]:
@@ -61,72 +73,43 @@ def print_table(top_performers, score_func, n):
             assists = p.assists
             minutes = p.minutes
             team = get_team_by_code(p.team)
+            against = get_next_fixture(fixtures, p.team)
             score = score_func(p)
-            player_table.add_row([p.web_name, f"£{p.now_cost / 10}", team,
-                                goals, assists, goals + assists, p.status, p.total_points, minutes, score, p.element_type])
+            player_table.add_row([p.web_name, f"£{p.now_cost / 10}", team, against,
+                                goals, assists, goals + assists, p.status, p.total_points, minutes, p.influence, round(score, 2), get_role_by_code(p.element_type)])
 
     return player_table
-        
-async def top_sub_10(players):
-    players = [p for p in players if p.now_cost/10 < 10]
-    calculation = lambda p: (((p.minutes)/90)*float((p.points_per_game)))/(p.now_cost/10)
-
-    top_performers = sorted(
-        players, key=calculation, reverse=True)
-
-    table = print_table(top_performers, calculation, 10)
-    print(("Top Players Below 10").center(100, "-"))
-    print(table)
-
-async def top_sub_5(players):
-    players = [p for p in players if p.now_cost/10 < 5]
-    calculation = lambda p: (((p.minutes)/90)*float((p.points_per_game)))/(p.now_cost/10)
-
-    top_performers = sorted(
-        players, key=calculation, reverse=True)
-
-    table = print_table(top_performers, calculation, 10)
-    print(("Top Players Below 5").center(100, "-"))
-    print(table)
-
-async def top_pointers(players):
-
-    calculation = lambda p: (p.total_points/p.minutes)*float(p.points_per_game) if p.minutes > 2500 else 0
-    top_performers = sorted(
-        players, key=calculation, reverse=True)
-
-    table = print_table(top_performers, calculation, 10)
-    print(("Top Pointers").center(100, "-"))
-    print(table)
-
-async def top_above_10(players):
-    players = [p for p in players if p.now_cost/10 > 10]
-
-    calculation = lambda p: (((p.minutes)/90)*float((p.points_per_game)))/(p.now_cost/10)
-
-    top_performers = sorted(
-        players, key=calculation, reverse=True)
-
-    table = print_table(top_performers, calculation, 10)
-
-    print(("Top Players Above 10").center(100, "-"))
-    print(table)
 
 async def get_injured_players(players):
-    injured_players = [p for p in players if p.status != "a"]
-    table = print_table(injured_players, lambda p: p.total_points, 50)
+    injured_players = [p for p in players if players.status != "a"]
+    table = print_table(injured_players, lambda p: players.total_points, 50)
     print(("Injured Players").center(100, "-"))
     print(table)
 
 async def get_player_by_name(players, name):
     for p in players:
-        if p.web_name == name:
-            table = print_table(p, lambda p: p.total_points, 1)
+        if players.web_name == name:
+            table = print_table(p, lambda p: players.total_points, 1)
             print(("Player").center(100, "-"))
             print(table)
             return
     print(f"Player {name} not found")
 
+def get_next_fixture(fixtures, team):
+    for team_fixture in fixtures:
+        if team_fixture.event == 1:
+            if team_fixture.team_h == team:
+                return get_team_by_code(team_fixture.team_a)
+            elif team_fixture.team_a == team:
+                return get_team_by_code(team_fixture.team_h)
+async def get_influence_per_team(players, team):
+    calc = lambda p: float(p.influence)/(p.now_cost/10)
+
+    players = [p for p in players if p.team == get_team_by_code(team)]
+    top_performers = sorted(players, key=calc, reverse=True)
+    table = print_table(top_performers, calc, 15, fixtures)
+    print((f"Top Influencers - {team}").center(100, "-"))
+    print(table)
 
 async def get_players():
     async with aiohttp.ClientSession() as session:
@@ -135,12 +118,49 @@ async def get_players():
 
     return players
 
+async def get_fixtures():
+    async with aiohttp.ClientSession() as session:
+        fpl = FPL(session)
+        fixtures = await fpl.get_fixtures()
+
+    return fixtures
+
+async def get_stats(players, fixtures, calculation, n, line, role, low_price, high_price):
+    if role == "All":
+        for i in range(4):
+            await get_stats(players, fixtures, calculation, n, line, get_role_by_code(i+1), low_price, high_price)
+        return
+    calculation = calculations[calculation]
+    players = [p for p in players if p.now_cost/10 > low_price and p.now_cost/10 < high_price]
+    players = [p for p in players if p.element_type == get_role_by_code(role)]
+    top_performers = sorted(
+        players, key=calculation, reverse=True)
+
+    table = print_table(top_performers, calculation, n, fixtures)
+    print((f"Top Players {line} - {role} - {low_price}<{high_price}").center(100, "-"))
+    print(table)
+
 if __name__ == "__main__":
     players = asyncio.run(get_players())
+    fixtures = asyncio.run(get_fixtures())
 
-    asyncio.run(top_sub_10(players))
-    asyncio.run(top_above_10(players))
-    asyncio.run(top_pointers(players))
-    asyncio.run(top_sub_5(players))
-    asyncio.run(get_injured_players(players))
+    # # top players above 10 pounds
+    #asyncio.run(get_stats(players, "top_points", 10, "Above 10", "All", 10, 15))
+    # top players below 5 pounds
+    #asyncio.run(get_stats(players, "top_points", 10, "Below 5","All", 0, 5))
+    # # top players below 10 pounds
+    # asyncio.run(get_stats(players, "top_points", "Top Below 10", "All", 5, 10))
+    # # top players below 15 pounds
+    # asyncio.run(get_stats(players, "top_points", "Top Below 15", "All", 0, 15))
+    # # top forwards
+    #asyncio.run(get_stats(players, "Top Points", 10, "Forwards", "F", 3, 15))
+    # # top midfielders
+    #asyncio.run(get_stats(players, "Top Points", 10, "Midfielders", "M", 3, 7))
+    # # top defenders
+    #asyncio.run(get_stats(players, fixtures, "Top Points", 10, "Defenders", "D", 3, 15))
+    # # top goalkeepers
+    #asyncio.run(get_stats(players, "Top Points", 10, "Goalkeepers", "GK", 3, 15))
+    # influencers
+    asyncio.run(get_influence_per_team(players, "Man City"))
+    #asyncio.run(get_injured_players(players))
     
